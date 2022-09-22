@@ -4,36 +4,25 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pyihe/go-pkg/syncs"
-	"github.com/pyihe/timer/heaptimer"
+	"github.com/pyihe/timer/wheeltimer"
 )
 
 func main() {
-	timer := heaptimer.New()
-	defer timer.Stop()
+	testWheelAfter()
+}
 
-	begin := time.Now()
-	counter := new(syncs.AtomicInt64)
+func testWheelAfter() {
+	timer := wheeltimer.New(10*time.Millisecond, 256)
 
-	for i := 10; i < 10000; i++ {
-		go func(idx int) {
-			timer.After(time.Duration(idx)*time.Millisecond, func() {
-				counter.Inc(1)
-				fmt.Println("after", idx, time.Now().Sub(begin))
+	for i := 11; i <= 10000; i++ {
+		go func(d int) {
+			timer.After(time.Duration(d)*time.Millisecond, func() {
+				fmt.Println("xxx: ", d)
 			})
 		}(i)
 	}
 
-	//for i := 100; i < 10000; i++ {
-	//	go func(idx int) {
-	//		everyID, _ := timer.Every(time.Duration(idx)*time.Millisecond, func() {
-	//			fmt.Println("every", idx, time.Now().Sub(begin))
-	//		})
-	//		time.Sleep(1 * time.Second)
-	//		timer.Delete(everyID)
-	//	}(i)
-	//}
-	time.Sleep(15 * time.Second)
-	fmt.Println(counter.Value())
-	select {}
+	time.Sleep(30 * time.Second)
+	timer.Stop()
+	time.Sleep(1 * time.Second)
 }

@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/panjf2000/ants/v2"
 	"github.com/pyihe/timer"
 
-	"github.com/panjf2000/ants/v2"
 	"github.com/pyihe/go-pkg/snowflakes"
 )
 
@@ -20,7 +20,6 @@ type asynHandler func(func())
 type heapTimer struct {
 	cancel      context.CancelFunc     // 停止所有协程（不包括执行任务的协程）
 	idGenerator snowflakes.Worker      // 任务ID生成器
-	gPool       *ants.Pool             // 协程池
 	taskPool    *sync.Pool             // 任务变量池，防止频繁分配内存
 	taskMap     *sync.Map              // key: task.id	value: bucket index
 	timeBuckets [bucketLen]*timeBucket // bucket
@@ -31,7 +30,6 @@ type heapTimer struct {
 }
 
 func New(options ...timer.Option) timer.Timer {
-	var err error
 	var ctx context.Context
 	var opts = &timer.Options{
 		Node:         1,
@@ -57,10 +55,6 @@ func New(options ...timer.Option) timer.Timer {
 	ctx, h.cancel = context.WithCancel(context.Background())
 	h.idGenerator = snowflakes.NewWorker(opts.Node)
 	h.bufferChan = make(chan interface{}, opts.TaskChanSize)
-	h.gPool, err = ants.NewPool(opts.GoPoolSize, ants.WithNonblocking(true))
-	if err != nil {
-		panic(err)
-	}
 
 	h.init()
 	h.start(ctx)
@@ -77,16 +71,16 @@ func (h *heapTimer) start(ctx context.Context) {
 	// 开启每个桶的任务监控协程
 	for _, tb := range h.timeBuckets {
 		tb := tb
-		_ = h.gPool.Submit(func() {
+		ants.Submit(func() {
 			tb.start(ctx)
 		})
 	}
 
-	_ = h.gPool.Submit(func() {
+	ants.Submit(func() {
 		h.run(ctx)
 	})
 
-	_ = h.gPool.Submit(func() {
+	ants.Submit(func() {
 		h.recycle(ctx)
 	})
 }
@@ -144,7 +138,7 @@ func (h *heapTimer) putTask(t *task) {
 }
 
 func (h *heapTimer) exec(fn func()) {
-	_ = h.gPool.Submit(func() {
+	ants.Submit(func() {
 		fn()
 	})
 }
@@ -176,7 +170,7 @@ func (h *heapTimer) After(delay time.Duration, fn func()) (int64, error) {
 	t.id = h.idGenerator.GetInt64()
 	t.repeated = false
 
-	err := h.gPool.Submit(func() {
+	err := ants.Submit(func() {
 		h.bufferChan <- t
 	})
 
@@ -194,7 +188,7 @@ func (h *heapTimer) Every(delay time.Duration, fn func()) (int64, error) {
 	t.id = h.idGenerator.GetInt64()
 	t.repeated = true
 
-	err := h.gPool.Submit(func() {
+	err := ants.Submit(func() {
 		h.bufferChan <- t
 	})
 
@@ -205,7 +199,7 @@ func (h *heapTimer) Delete(id int64) error {
 	if h.isClosed() {
 		return timer.ErrTimerClosed
 	}
-	return h.gPool.Submit(func() {
+	return ants.Submit(func() {
 		h.bufferChan <- id
 	})
 }
@@ -216,5 +210,5 @@ func (h *heapTimer) Stop() {
 	}
 	h.cancel()
 	// 释放协程池
-	h.gPool.ReleaseTimeout(5 * time.Second)
+	ants.Release()
 }

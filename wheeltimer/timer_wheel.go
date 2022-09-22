@@ -25,7 +25,6 @@ func (t *task) reset() {
 }
 
 type wheelTimer struct {
-	gPool       *ants.Pool        // 协程池，用于异步执行任务
 	tasks       *sync.Map         // 任务map，用于标记删除
 	taskPool    *sync.Pool        // 任务池，避免频繁分配内存
 	idGenerator snowflakes.Worker // ID生成器，用于生成新增任务的唯一ID
@@ -39,7 +38,6 @@ type wheelTimer struct {
 }
 
 func New(timeMs time.Duration, slot int, opts ...timer.Option) timer.Timer {
-	var err error
 	var c = &timer.Options{
 		Node:         0,    // 默认节点ID为0
 		GoPoolSize:   1000, // 默认协程池大小为64
@@ -64,10 +62,6 @@ func New(timeMs time.Duration, slot int, opts ...timer.Option) timer.Timer {
 	}
 	w.bufferChan = make(chan interface{}, c.TaskChanSize)
 	w.idGenerator = snowflakes.NewWorker(c.Node)
-	w.gPool, err = ants.NewPool(c.GoPoolSize, ants.WithNonblocking(true))
-	if err != nil {
-		panic(err)
-	}
 
 	w.init()
 	w.start()
@@ -81,7 +75,7 @@ func (w *wheelTimer) init() {
 }
 
 func (w *wheelTimer) start() {
-	_ = w.gPool.Submit(func() {
+	ants.Submit(func() {
 		ticker := time.NewTicker(w.timeMS)
 		for {
 			select {
@@ -96,7 +90,7 @@ func (w *wheelTimer) start() {
 				}
 			case <-w.closeChan:
 				ticker.Stop()
-				_ = w.gPool.ReleaseTimeout(5 * time.Second)
+				ants.Release()
 				return
 			}
 		}
@@ -215,7 +209,7 @@ func (w *wheelTimer) onTick() {
 func (w *wheelTimer) execTask(tasks ...func()) {
 	for _, fn := range tasks {
 		fn := fn
-		_ = w.gPool.Submit(func() {
+		ants.Submit(func() {
 			fn()
 		})
 	}
@@ -232,7 +226,7 @@ func (w *wheelTimer) After(delay time.Duration, fn func()) (int64, error) {
 	t.repeated = false
 	t.deleted = false
 
-	err := w.gPool.Submit(func() {
+	err := ants.Submit(func() {
 		w.bufferChan <- t
 	})
 	return t.id, err
@@ -249,7 +243,7 @@ func (w *wheelTimer) Every(delay time.Duration, fn func()) (int64, error) {
 	t.repeated = true
 	t.deleted = false
 
-	err := w.gPool.Submit(func() {
+	err := ants.Submit(func() {
 		w.bufferChan <- t
 	})
 	return t.id, err
@@ -259,7 +253,7 @@ func (w *wheelTimer) Delete(id int64) error {
 	if w.isClosed() {
 		return timer.ErrTimerClosed
 	}
-	return w.gPool.Submit(func() {
+	return ants.Submit(func() {
 		w.bufferChan <- id
 	})
 }
