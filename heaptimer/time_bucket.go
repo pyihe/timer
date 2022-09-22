@@ -1,4 +1,4 @@
-package timeheap
+package heaptimer
 
 import (
 	"context"

@@ -1,12 +1,13 @@
-package timeheap
+package heaptimer
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"gosample/times"
+	"github.com/pyihe/timer"
 
 	"github.com/panjf2000/ants/v2"
 	"github.com/pyihe/go-pkg/snowflakes"
@@ -16,7 +17,7 @@ const bucketLen = 64
 
 type asynHandler func(func())
 
-type timeHeap struct {
+type heapTimer struct {
 	cancel      context.CancelFunc     // 停止所有协程（不包括执行任务的协程）
 	idGenerator snowflakes.Worker      // 任务ID生成器
 	gPool       *ants.Pool             // 协程池
@@ -29,15 +30,15 @@ type timeHeap struct {
 	bucketPos   int                    // bucket索引
 }
 
-func New(options ...times.Option) times.Timer {
+func New(options ...timer.Option) timer.Timer {
 	var err error
 	var ctx context.Context
-	var opts = &times.Options{
+	var opts = &timer.Options{
 		Node:         1,
 		GoPoolSize:   1000,
 		TaskChanSize: 1024,
 	}
-	var h = &timeHeap{
+	var h = &heapTimer{
 		taskPool: &sync.Pool{
 			New: func() interface{} {
 				return &task{}
@@ -66,13 +67,13 @@ func New(options ...times.Option) times.Timer {
 	return h
 }
 
-func (h *timeHeap) init() {
+func (h *heapTimer) init() {
 	for i := range h.timeBuckets {
 		h.timeBuckets[i] = newTimeBucket(h.recycleChan, h.exec)
 	}
 }
 
-func (h *timeHeap) start(ctx context.Context) {
+func (h *heapTimer) start(ctx context.Context) {
 	// 开启每个桶的任务监控协程
 	for _, tb := range h.timeBuckets {
 		tb := tb
@@ -90,7 +91,7 @@ func (h *timeHeap) start(ctx context.Context) {
 	})
 }
 
-func (h *timeHeap) recycle(ctx context.Context) {
+func (h *heapTimer) recycle(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -105,7 +106,7 @@ func (h *timeHeap) recycle(ctx context.Context) {
 	}
 }
 
-func (h *timeHeap) run(ctx context.Context) {
+func (h *heapTimer) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -115,17 +116,18 @@ func (h *timeHeap) run(ctx context.Context) {
 			case *task:
 				h.addTask(t.(*task))
 			case int64:
+				fmt.Println("delete int64")
 				h.deleteTask(t.(int64))
 			}
 		}
 	}
 }
 
-func (h *timeHeap) isClosed() bool {
+func (h *heapTimer) isClosed() bool {
 	return atomic.LoadInt32(&h.closed) == 1
 }
 
-func (h *timeHeap) getTask() *task {
+func (h *heapTimer) getTask() *task {
 	t, ok := h.taskPool.Get().(*task)
 	if ok {
 		return t
@@ -133,7 +135,7 @@ func (h *timeHeap) getTask() *task {
 	return &task{}
 }
 
-func (h *timeHeap) putTask(t *task) {
+func (h *heapTimer) putTask(t *task) {
 	if t == nil {
 		return
 	}
@@ -141,13 +143,13 @@ func (h *timeHeap) putTask(t *task) {
 	h.taskPool.Put(t)
 }
 
-func (h *timeHeap) exec(fn func()) {
+func (h *heapTimer) exec(fn func()) {
 	_ = h.gPool.Submit(func() {
 		fn()
 	})
 }
 
-func (h *timeHeap) addTask(t *task) {
+func (h *heapTimer) addTask(t *task) {
 	// 轮询的往bucket中添加延时任务
 	h.bucketPos = (h.bucketPos + 1) % bucketLen
 	bkt := h.timeBuckets[h.bucketPos]
@@ -155,7 +157,7 @@ func (h *timeHeap) addTask(t *task) {
 	h.taskMap.Store(t.id, h.bucketPos)
 }
 
-func (h *timeHeap) deleteTask(taskId int64) {
+func (h *heapTimer) deleteTask(taskId int64) {
 	v, exist := h.taskMap.Load(taskId)
 	if !exist {
 		return
@@ -164,9 +166,9 @@ func (h *timeHeap) deleteTask(taskId int64) {
 	h.taskMap.Delete(taskId)
 }
 
-func (h *timeHeap) After(delay time.Duration, fn func()) (int64, error) {
+func (h *heapTimer) After(delay time.Duration, fn func()) (int64, error) {
 	if h.isClosed() {
-		return 0, times.ErrTimerClosed
+		return 0, timer.ErrTimerClosed
 	}
 	t := h.getTask()
 	t.delay = delay
@@ -181,9 +183,9 @@ func (h *timeHeap) After(delay time.Duration, fn func()) (int64, error) {
 	return t.id, err
 }
 
-func (h *timeHeap) Every(delay time.Duration, fn func()) (int64, error) {
+func (h *heapTimer) Every(delay time.Duration, fn func()) (int64, error) {
 	if h.isClosed() {
-		return 0, times.ErrTimerClosed
+		return 0, timer.ErrTimerClosed
 	}
 
 	t := h.getTask()
@@ -199,16 +201,16 @@ func (h *timeHeap) Every(delay time.Duration, fn func()) (int64, error) {
 	return t.id, err
 }
 
-func (h *timeHeap) Delete(id int64) error {
+func (h *heapTimer) Delete(id int64) error {
 	if h.isClosed() {
-		return times.ErrTimerClosed
+		return timer.ErrTimerClosed
 	}
 	return h.gPool.Submit(func() {
 		h.bufferChan <- id
 	})
 }
 
-func (h *timeHeap) Stop() {
+func (h *heapTimer) Stop() {
 	if !atomic.CompareAndSwapInt32(&h.closed, 0, 1) {
 		return
 	}

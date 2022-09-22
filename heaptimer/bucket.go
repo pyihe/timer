@@ -1,9 +1,9 @@
-package timeheap
+package heaptimer
 
 import (
 	"time"
 
-	"gosample/times/timeheap/heaps"
+	"github.com/pyihe/timer/heaptimer/fourheap"
 )
 
 type task struct {
@@ -86,13 +86,13 @@ func (b *bucket) peek() *task {
 }
 
 func (b *bucket) fix(t *task) {
-	heaps.Fix(b, t.index)
+	fourheap.Fix(b, t.index)
 }
 
 func (b *bucket) delete(i int) {
-	heaps.Remove(b, i)
+	fourheap.Remove(b, i)
 }
 
 func (b *bucket) add(t *task) {
-	heaps.Push(b, t)
+	fourheap.Push(b, t)
 }

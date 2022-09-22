@@ -1,4 +1,4 @@
-package times
+package timer
 
 type Options struct {
 	Node         int64 // 服务节点ID

@@ -1,4 +1,4 @@
-package timewheel
+package wheeltimer
 
 import (
 	"container/list"
@@ -6,10 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gosample/times"
-
 	"github.com/panjf2000/ants/v2"
 	"github.com/pyihe/go-pkg/snowflakes"
+	"github.com/pyihe/timer"
 )
 
 type task struct {
@@ -25,8 +24,7 @@ func (t *task) reset() {
 	*t = task{}
 }
 
-// 5层时间轮
-type wheel struct {
+type wheelTimer struct {
 	gPool       *ants.Pool        // 协程池，用于异步执行任务
 	tasks       *sync.Map         // 任务map，用于标记删除
 	taskPool    *sync.Pool        // 任务池，避免频繁分配内存
@@ -40,14 +38,14 @@ type wheel struct {
 	bufferChan  chan interface{}  // 任务通道，用于新增延时任务
 }
 
-func New(timeMs time.Duration, slot int, opts ...times.Option) times.Timer {
+func New(timeMs time.Duration, slot int, opts ...timer.Option) timer.Timer {
 	var err error
-	var c = &times.Options{
+	var c = &timer.Options{
 		Node:         0,    // 默认节点ID为0
 		GoPoolSize:   1000, // 默认协程池大小为64
 		TaskChanSize: 1024, // 默认通道缓冲区大小为1024
 	}
-	var w = &wheel{
+	var w = &wheelTimer{
 		timeMS:     timeMs,
 		slots:      make([]*list.List, slot),
 		slotNum:    slot,
@@ -76,13 +74,13 @@ func New(timeMs time.Duration, slot int, opts ...times.Option) times.Timer {
 	return w
 }
 
-func (w *wheel) init() {
+func (w *wheelTimer) init() {
 	for i := range w.slots {
 		w.slots[i] = list.New()
 	}
 }
 
-func (w *wheel) start() {
+func (w *wheelTimer) start() {
 	_ = w.gPool.Submit(func() {
 		ticker := time.NewTicker(w.timeMS)
 		for {
@@ -105,7 +103,7 @@ func (w *wheel) start() {
 	})
 }
 
-func (w *wheel) getTask() *task {
+func (w *wheelTimer) getTask() *task {
 	t, ok := w.taskPool.Get().(*task)
 	if ok {
 		return t
@@ -114,7 +112,7 @@ func (w *wheel) getTask() *task {
 	return t
 }
 
-func (w *wheel) putTask(t *task) {
+func (w *wheelTimer) putTask(t *task) {
 	if t == nil {
 		return
 	}
@@ -122,19 +120,19 @@ func (w *wheel) putTask(t *task) {
 	w.taskPool.Put(t)
 }
 
-func (w *wheel) isClosed() bool {
+func (w *wheelTimer) isClosed() bool {
 	return atomic.LoadInt32(&w.closed) == 1
 }
 
 // 获取延时对应的槽位已经需要走动的圈数
-func (w *wheel) getPosition(delay time.Duration) (pos, loop int) {
+func (w *wheelTimer) getPosition(delay time.Duration) (pos, loop int) {
 	step := int(delay / w.timeMS)           // step表示该延时需要走动多少个槽位
 	pos = (w.slotCursor + step) % w.slotNum // 从当前时间指针对应的槽位开始计算，该延时所属的槽位索引
 	loop = (step - 1) / w.slotNum           //
 	return
 }
 
-func (w *wheel) addTask(t *task) {
+func (w *wheelTimer) addTask(t *task) {
 	// 延时不能小于最小精度
 	if t.delay < w.timeMS {
 		t.delay = w.timeMS
@@ -156,7 +154,7 @@ func (w *wheel) addTask(t *task) {
 }
 
 // 删除任务，先在task map中标记删除，在onTick遍历任务队列时进行真正的删除
-func (w *wheel) deleteTask(taskID int64) {
+func (w *wheelTimer) deleteTask(taskID int64) {
 	v, exist := w.tasks.Load(taskID)
 	if !exist {
 		return
@@ -167,7 +165,7 @@ func (w *wheel) deleteTask(taskID int64) {
 }
 
 // 时间指针（索引）每跳动一次需要执行的流程
-func (w *wheel) onTick() {
+func (w *wheelTimer) onTick() {
 	// 指针先跳动一下
 	w.slotCursor = (w.slotCursor + 1) % w.slotNum
 
@@ -214,7 +212,7 @@ func (w *wheel) onTick() {
 	w.execTask(tasks...)
 }
 
-func (w *wheel) execTask(tasks ...func()) {
+func (w *wheelTimer) execTask(tasks ...func()) {
 	for _, fn := range tasks {
 		fn := fn
 		_ = w.gPool.Submit(func() {
@@ -223,9 +221,9 @@ func (w *wheel) execTask(tasks ...func()) {
 	}
 }
 
-func (w *wheel) After(delay time.Duration, fn func()) (int64, error) {
+func (w *wheelTimer) After(delay time.Duration, fn func()) (int64, error) {
 	if w.isClosed() {
-		return 0, times.ErrTimerClosed
+		return 0, timer.ErrTimerClosed
 	}
 	t := w.getTask()
 	t.delay = delay
@@ -240,9 +238,9 @@ func (w *wheel) After(delay time.Duration, fn func()) (int64, error) {
 	return t.id, err
 }
 
-func (w *wheel) Every(delay time.Duration, fn func()) (int64, error) {
+func (w *wheelTimer) Every(delay time.Duration, fn func()) (int64, error) {
 	if w.isClosed() {
-		return 0, times.ErrTimerClosed
+		return 0, timer.ErrTimerClosed
 	}
 	t := w.getTask()
 	t.delay = delay
@@ -257,16 +255,16 @@ func (w *wheel) Every(delay time.Duration, fn func()) (int64, error) {
 	return t.id, err
 }
 
-func (w *wheel) Delete(id int64) error {
+func (w *wheelTimer) Delete(id int64) error {
 	if w.isClosed() {
-		return times.ErrTimerClosed
+		return timer.ErrTimerClosed
 	}
 	return w.gPool.Submit(func() {
 		w.bufferChan <- id
 	})
 }
 
-func (w *wheel) Stop() {
+func (w *wheelTimer) Stop() {
 	if !atomic.CompareAndSwapInt32(&w.closed, 0, 1) {
 		return
 	}
