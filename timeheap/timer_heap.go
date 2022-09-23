@@ -1,4 +1,4 @@
-package heaptimer
+package timeheap
 
 import (
 	"context"
@@ -7,10 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/panjf2000/ants/v2"
 	"github.com/pyihe/timer"
-
-	"github.com/pyihe/go-pkg/snowflakes"
+	"github.com/pyihe/timer/pkg/gopool"
+	"github.com/pyihe/timer/pkg/taskpool"
 )
 
 const bucketLen = 64
@@ -18,43 +17,26 @@ const bucketLen = 64
 type asynHandler func(func())
 
 type heapTimer struct {
-	cancel      context.CancelFunc     // 停止所有协程（不包括执行任务的协程）
-	idGenerator snowflakes.Worker      // 任务ID生成器
-	taskPool    *sync.Pool             // 任务变量池，防止频繁分配内存
-	taskMap     *sync.Map              // key: task.id	value: bucket index
 	timeBuckets [bucketLen]*timeBucket // bucket
+	recycleChan chan *taskpool.Task    // 用于回收task变量的通道
+	cancel      context.CancelFunc     // 停止所有协程（不包括执行任务的协程）
 	bufferChan  chan interface{}       // 用于添加、删除任务的通道
-	recycleChan chan *task             // 用于回收task变量的通道
+	taskMap     *sync.Map              // key: task.id	value: bucket index
 	closed      int32                  // timer是否关闭
 	bucketPos   int                    // bucket索引
 }
 
-func New(options ...timer.Option) timer.Timer {
+func New(bufferSize int) timer.Timer {
 	var ctx context.Context
-	var opts = &timer.Options{
-		Node:         1,
-		GoPoolSize:   1000,
-		TaskChanSize: 1024,
-	}
 	var h = &heapTimer{
-		taskPool: &sync.Pool{
-			New: func() interface{} {
-				return &task{}
-			},
-		},
 		taskMap:     &sync.Map{},
 		timeBuckets: [64]*timeBucket{},
-		recycleChan: make(chan *task, bucketLen),
+		recycleChan: make(chan *taskpool.Task, bucketLen),
 		closed:      0,
 		bucketPos:   -1,
-	}
-
-	for _, op := range options {
-		op(opts)
+		bufferChan:  make(chan interface{}, bufferSize),
 	}
 	ctx, h.cancel = context.WithCancel(context.Background())
-	h.idGenerator = snowflakes.NewWorker(opts.Node)
-	h.bufferChan = make(chan interface{}, opts.TaskChanSize)
 
 	h.init()
 	h.start(ctx)
@@ -71,16 +53,16 @@ func (h *heapTimer) start(ctx context.Context) {
 	// 开启每个桶的任务监控协程
 	for _, tb := range h.timeBuckets {
 		tb := tb
-		ants.Submit(func() {
+		gopool.Execute(func() {
 			tb.start(ctx)
 		})
 	}
 
-	ants.Submit(func() {
+	gopool.Execute(func() {
 		h.run(ctx)
 	})
 
-	ants.Submit(func() {
+	gopool.Execute(func() {
 		h.recycle(ctx)
 	})
 }
@@ -93,8 +75,8 @@ func (h *heapTimer) recycle(ctx context.Context) {
 
 		case t := <-h.recycleChan:
 			if t != nil {
-				h.taskMap.Delete(t.id)
-				h.putTask(t)
+				h.taskMap.Delete(t.ID)
+				taskpool.Put(t)
 			}
 		}
 	}
@@ -107,10 +89,9 @@ func (h *heapTimer) run(ctx context.Context) {
 			return
 		case t := <-h.bufferChan:
 			switch t.(type) {
-			case *task:
-				h.addTask(t.(*task))
+			case *taskpool.Task:
+				h.addTask(t.(*taskpool.Task))
 			case int64:
-				fmt.Println("delete int64")
 				h.deleteTask(t.(int64))
 			}
 		}
@@ -121,34 +102,16 @@ func (h *heapTimer) isClosed() bool {
 	return atomic.LoadInt32(&h.closed) == 1
 }
 
-func (h *heapTimer) getTask() *task {
-	t, ok := h.taskPool.Get().(*task)
-	if ok {
-		return t
-	}
-	return &task{}
-}
-
-func (h *heapTimer) putTask(t *task) {
-	if t == nil {
-		return
-	}
-	t.reset()
-	h.taskPool.Put(t)
-}
-
 func (h *heapTimer) exec(fn func()) {
-	ants.Submit(func() {
-		fn()
-	})
+	gopool.Execute(fn)
 }
 
-func (h *heapTimer) addTask(t *task) {
+func (h *heapTimer) addTask(t *taskpool.Task) {
 	// 轮询的往bucket中添加延时任务
 	h.bucketPos = (h.bucketPos + 1) % bucketLen
 	bkt := h.timeBuckets[h.bucketPos]
 	bkt.add(t)
-	h.taskMap.Store(t.id, h.bucketPos)
+	h.taskMap.Store(t.ID, h.bucketPos)
 }
 
 func (h *heapTimer) deleteTask(taskId int64) {
@@ -164,17 +127,12 @@ func (h *heapTimer) After(delay time.Duration, fn func()) (int64, error) {
 	if h.isClosed() {
 		return 0, timer.ErrTimerClosed
 	}
-	t := h.getTask()
-	t.delay = delay
-	t.fn = fn
-	t.id = h.idGenerator.GetInt64()
-	t.repeated = false
 
-	err := ants.Submit(func() {
+	t := taskpool.Get(delay, fn, false)
+	gopool.Execute(func() {
 		h.bufferChan <- t
 	})
-
-	return t.id, err
+	return t.ID, nil
 }
 
 func (h *heapTimer) Every(delay time.Duration, fn func()) (int64, error) {
@@ -182,26 +140,21 @@ func (h *heapTimer) Every(delay time.Duration, fn func()) (int64, error) {
 		return 0, timer.ErrTimerClosed
 	}
 
-	t := h.getTask()
-	t.delay = delay
-	t.fn = fn
-	t.id = h.idGenerator.GetInt64()
-	t.repeated = true
-
-	err := ants.Submit(func() {
+	t := taskpool.Get(delay, fn, true)
+	gopool.Execute(func() {
 		h.bufferChan <- t
 	})
-
-	return t.id, err
+	return t.ID, nil
 }
 
 func (h *heapTimer) Delete(id int64) error {
 	if h.isClosed() {
 		return timer.ErrTimerClosed
 	}
-	return ants.Submit(func() {
+	gopool.Execute(func() {
 		h.bufferChan <- id
 	})
+	return nil
 }
 
 func (h *heapTimer) Stop() {
@@ -210,5 +163,12 @@ func (h *heapTimer) Stop() {
 	}
 	h.cancel()
 	// 释放协程池
-	ants.Release()
+	gopool.Release()
+
+	n := 0
+	h.taskMap.Range(func(key, value any) bool {
+		n += 1
+		return true
+	})
+	fmt.Println("nnnnnn = ", n)
 }

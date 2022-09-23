@@ -1,27 +1,13 @@
-package heaptimer
+package timeheap
 
 import (
 	"time"
 
-	"github.com/pyihe/timer/heaptimer/fourheap"
+	"github.com/pyihe/timer/pkg/fourheap"
+	"github.com/pyihe/timer/pkg/taskpool"
 )
 
-type task struct {
-	deadline time.Time     // 最近一次执行的截止时间
-	delay    time.Duration // 任务延时
-	id       int64         // 任务ID
-	fn       func()        // 任务对应的函数
-	index    int           // 任务索引
-	repeated bool          // 是否重复执行
-}
-
-func (t *task) reset() {
-	*t = task{
-		index: -1,
-	}
-}
-
-type bucket []*task
+type bucket []*taskpool.Task
 
 func newBucket(c int) *bucket {
 	b := make(bucket, 0, c)
@@ -33,17 +19,24 @@ func (b *bucket) Len() int {
 }
 
 func (b *bucket) Less(i, j int) bool {
-	return (*b)[i].deadline.Before((*b)[j].deadline)
+	iTime := (*b)[i].Extra[0].(time.Time)
+	jTime := (*b)[j].Extra[0].(time.Time)
+	return iTime.Before(jTime)
 }
 
 func (b *bucket) Swap(i, j int) {
-	(*b)[i].index = j
-	(*b)[j].index = i
+	// 交换元素
 	(*b)[i], (*b)[j] = (*b)[j], (*b)[i]
+
+	// 交换索引
+	iIndex := (*b)[i].Extra[1].(int)
+	jIndex := (*b)[j].Extra[1].(int)
+	(*b)[i].Extra[1] = jIndex
+	(*b)[j].Extra[1] = iIndex
 }
 
 func (b *bucket) Push(x interface{}) {
-	t, ok := x.(*task)
+	t, ok := x.(*taskpool.Task)
 	if !ok {
 		return
 	}
@@ -57,7 +50,7 @@ func (b *bucket) Push(x interface{}) {
 	}
 	*b = (*b)[0 : n+1]
 	(*b)[n] = t
-	t.index = n
+	t.Extra[1] = n
 }
 
 func (b *bucket) Pop() interface{} {
@@ -77,7 +70,7 @@ func (b *bucket) Pop() interface{} {
 	return x
 }
 
-func (b *bucket) peek() *task {
+func (b *bucket) peek() *taskpool.Task {
 	if len(*b) == 0 {
 		return nil
 	}
@@ -85,14 +78,15 @@ func (b *bucket) peek() *task {
 	return (*b)[0]
 }
 
-func (b *bucket) fix(t *task) {
-	fourheap.Fix(b, t.index)
+func (b *bucket) fix(t *taskpool.Task) {
+	index := t.Extra[1].(int)
+	fourheap.Fix(b, index)
 }
 
 func (b *bucket) delete(i int) {
 	fourheap.Remove(b, i)
 }
 
-func (b *bucket) add(t *task) {
+func (b *bucket) add(t *taskpool.Task) {
 	fourheap.Push(b, t)
 }
