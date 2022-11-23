@@ -2,14 +2,20 @@ package timewheel
 
 import (
 	"container/list"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/pyihe/timer"
+	"github.com/pyihe/timer/pkg/cronexpr"
 	"github.com/pyihe/timer/pkg/gopool"
 	"github.com/pyihe/timer/pkg/taskpool"
+)
+
+const (
+	defaultCursor = -1
+	statusOpen    = 0
+	statusClosed  = 1
 )
 
 type wheelTimer struct {
@@ -28,8 +34,8 @@ func New(timeMs time.Duration, slot, bufferSize int) timer.Timer {
 		timeMS:     timeMs,
 		slots:      make([]*list.List, slot),
 		slotNum:    slot,
-		slotCursor: -1,
-		closed:     0,
+		slotCursor: defaultCursor,
+		closed:     statusOpen,
 		tasks:      &sync.Map{},
 		closeChan:  make(chan struct{}),
 	}
@@ -65,10 +71,8 @@ func (w *wheelTimer) start() {
 				n := 0
 				w.tasks.Range(func(key, value any) bool {
 					n += 1
-					fmt.Println(key)
 					return true
 				})
-				fmt.Println("nnnnnn = ", n)
 				gopool.Release()
 				return
 			}
@@ -77,7 +81,7 @@ func (w *wheelTimer) start() {
 }
 
 func (w *wheelTimer) isClosed() bool {
-	return atomic.LoadInt32(&w.closed) == 1
+	return atomic.LoadInt32(&w.closed) == statusClosed
 }
 
 // 获取延时对应的槽位已经需要走动的圈数
@@ -170,7 +174,20 @@ func (w *wheelTimer) onTick() {
 			gopool.Execute(func() {
 				w.bufferChan <- t
 			})
-			//w.addTask(t)
+
+		case t.Expr != nil:
+			now := time.Now()
+			nextTime := t.Expr.Next(now)
+			if nextTime.IsZero() {
+				w.tasks.Delete(t.ID)
+				taskpool.Put(t)
+			} else {
+				t.Delay = nextTime.Sub(now)
+				gopool.Execute(func() {
+					w.bufferChan <- t
+				})
+			}
+
 		default:
 			w.tasks.Delete(t.ID) // 否则直接删除
 			taskpool.Put(t)      // 回收Task
@@ -186,31 +203,34 @@ func (w *wheelTimer) execTask(tasks ...func()) {
 	}
 }
 
-func (w *wheelTimer) After(delay time.Duration, fn func()) (int64, error) {
+func (w *wheelTimer) After(delay time.Duration, fn func()) (timer.TaskID, error) {
 	if w.isClosed() {
-		return 0, timer.ErrTimerClosed
+		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}
 
-	t := taskpool.Get(delay, fn, false)
+	t := taskpool.Get(delay, fn, false, nil)
 	gopool.Execute(func() {
 		w.bufferChan <- t
 	})
-	return t.ID, nil
+	return timer.TaskID(t.ID), nil
 }
 
-func (w *wheelTimer) Every(delay time.Duration, fn func()) (int64, error) {
+func (w *wheelTimer) Every(delay time.Duration, fn func()) (timer.TaskID, error) {
 	if w.isClosed() {
-		return 0, timer.ErrTimerClosed
+		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}
 
-	t := taskpool.Get(delay, fn, true)
+	t := taskpool.Get(delay, fn, true, nil)
 	gopool.Execute(func() {
 		w.bufferChan <- t
 	})
-	return t.ID, nil
+	return timer.TaskID(t.ID), nil
 }
 
-func (w *wheelTimer) Delete(id int64) error {
+func (w *wheelTimer) Delete(id timer.TaskID) error {
+	if id == timer.EmptyTaskID {
+		return nil
+	}
 	if w.isClosed() {
 		return timer.ErrTimerClosed
 	}
@@ -225,4 +245,28 @@ func (w *wheelTimer) Stop() {
 		return
 	}
 	close(w.closeChan)
+}
+
+func (w *wheelTimer) Cron(desc string, fn func()) (timer.TaskID, error) {
+	if w.isClosed() {
+		return timer.EmptyTaskID, timer.ErrTimerClosed
+	}
+
+	// 解析desc
+	expr, err := cronexpr.NewCronExpr(desc)
+	if err != nil {
+		return timer.EmptyTaskID, err
+	}
+
+	var now = time.Now()
+	var nextTime = expr.Next(now)
+	if nextTime.IsZero() {
+		err = timer.ErrInvalidExpr
+		return timer.EmptyTaskID, err
+	}
+	var t = taskpool.Get(nextTime.Sub(now), fn, false, expr)
+	gopool.Execute(func() {
+		w.bufferChan <- t
+	})
+	return timer.TaskID(t.ID), nil
 }

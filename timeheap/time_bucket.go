@@ -91,9 +91,25 @@ func (tb *timeBucket) runTask(t *taskpool.Task) {
 	tb.mu.Unlock()
 
 	// 如果是重复执行，则再次添加
-	if t.Repeated {
+	switch {
+	case t.Repeated: // 重复执行的任务
 		tb.add(t)
-	} else {
+	case t.Expr != nil: // Cron类型的任务
+		now := time.Now()
+		nextTime := t.Expr.Next(now)
+		switch nextTime.IsZero() {
+		case true:
+			tb.mu.Lock()
+			delete(tb.taskMap, t.ID)
+			tb.mu.Unlock()
+			tb.asynExec(func() {
+				tb.recycleNotify <- t
+			})
+		default:
+			t.Delay = nextTime.Sub(now)
+			tb.add(t)
+		}
+	default: // 单次执行的任务
 		// 否则从任务列表中删除
 		tb.mu.Lock()
 		delete(tb.taskMap, t.ID)

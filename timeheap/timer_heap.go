@@ -2,12 +2,12 @@ package timeheap
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/pyihe/timer"
+	"github.com/pyihe/timer/pkg/cronexpr"
 	"github.com/pyihe/timer/pkg/gopool"
 	"github.com/pyihe/timer/pkg/taskpool"
 )
@@ -123,31 +123,34 @@ func (h *heapTimer) deleteTask(taskId int64) {
 	h.taskMap.Delete(taskId)
 }
 
-func (h *heapTimer) After(delay time.Duration, fn func()) (int64, error) {
+func (h *heapTimer) After(delay time.Duration, fn func()) (timer.TaskID, error) {
 	if h.isClosed() {
-		return 0, timer.ErrTimerClosed
+		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}
 
-	t := taskpool.Get(delay, fn, false)
+	t := taskpool.Get(delay, fn, false, nil)
 	gopool.Execute(func() {
 		h.bufferChan <- t
 	})
-	return t.ID, nil
+	return timer.TaskID(t.ID), nil
 }
 
-func (h *heapTimer) Every(delay time.Duration, fn func()) (int64, error) {
+func (h *heapTimer) Every(delay time.Duration, fn func()) (timer.TaskID, error) {
 	if h.isClosed() {
-		return 0, timer.ErrTimerClosed
+		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}
 
-	t := taskpool.Get(delay, fn, true)
+	t := taskpool.Get(delay, fn, true, nil)
 	gopool.Execute(func() {
 		h.bufferChan <- t
 	})
-	return t.ID, nil
+	return timer.TaskID(t.ID), nil
 }
 
-func (h *heapTimer) Delete(id int64) error {
+func (h *heapTimer) Delete(id timer.TaskID) error {
+	if id == timer.EmptyTaskID {
+		return nil
+	}
 	if h.isClosed() {
 		return timer.ErrTimerClosed
 	}
@@ -170,5 +173,26 @@ func (h *heapTimer) Stop() {
 		n += 1
 		return true
 	})
-	fmt.Println("nnnnnn = ", n)
+}
+
+func (h *heapTimer) Cron(desc string, fn func()) (timer.TaskID, error) {
+	if h.isClosed() {
+		return timer.EmptyTaskID, timer.ErrTimerClosed
+	}
+	// 解析desc
+	expr, err := cronexpr.NewCronExpr(desc)
+	if err != nil {
+		return timer.EmptyTaskID, err
+	}
+
+	var now = time.Now()
+	var nextTime = expr.Next(now)
+	if nextTime.IsZero() {
+		return timer.EmptyTaskID, err
+	}
+	var t = taskpool.Get(nextTime.Sub(now), fn, false, expr)
+	gopool.Execute(func() {
+		h.bufferChan <- t
+	})
+	return timer.TaskID(t.ID), nil
 }
