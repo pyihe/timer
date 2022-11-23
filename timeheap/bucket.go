@@ -3,8 +3,8 @@ package timeheap
 import (
 	"time"
 
-	"github.com/pyihe/timer/pkg/fourheap"
-	"github.com/pyihe/timer/pkg/taskpool"
+	"github.com/pyihe/timer/internal/fourheap"
+	"github.com/pyihe/timer/internal/taskpool"
 )
 
 type bucket []*taskpool.Task

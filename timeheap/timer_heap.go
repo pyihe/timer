@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/pyihe/timer"
-	"github.com/pyihe/timer/pkg/cronexpr"
-	"github.com/pyihe/timer/pkg/gopool"
-	"github.com/pyihe/timer/pkg/taskpool"
+	"github.com/pyihe/timer/internal/cronexpr"
+	"github.com/pyihe/timer/internal/gopool"
+	"github.com/pyihe/timer/internal/taskpool"
 )
 
 const bucketLen = 64

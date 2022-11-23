@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pyihe/timer/pkg/taskpool"
+	"github.com/pyihe/timer/internal/taskpool"
 )
 
 type timeBucket struct {

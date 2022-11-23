@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/pyihe/go-pkg/snowflakes"
-	"github.com/pyihe/timer/pkg/cronexpr"
+	"github.com/pyihe/timer/internal/cronexpr"
 )
 
 type Task struct {
