@@ -204,6 +204,9 @@ func (w *wheelTimer) execTask(tasks ...func()) {
 }
 
 func (w *wheelTimer) After(delay time.Duration, fn func()) (timer.TaskID, error) {
+	if fn == nil {
+		return timer.EmptyTaskID, timer.ErrNilFunc
+	}
 	if w.isClosed() {
 		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}
@@ -216,6 +219,9 @@ func (w *wheelTimer) After(delay time.Duration, fn func()) (timer.TaskID, error)
 }
 
 func (w *wheelTimer) Every(delay time.Duration, fn func()) (timer.TaskID, error) {
+	if fn == nil {
+		return timer.EmptyTaskID, timer.ErrNilFunc
+	}
 	if w.isClosed() {
 		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}
@@ -248,6 +254,9 @@ func (w *wheelTimer) Stop() {
 }
 
 func (w *wheelTimer) Cron(desc string, fn func()) (timer.TaskID, error) {
+	if fn == nil {
+		return timer.EmptyTaskID, timer.ErrNilFunc
+	}
 	if w.isClosed() {
 		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}

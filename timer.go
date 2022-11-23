@@ -11,6 +11,7 @@ const (
 )
 
 var (
+	ErrNilFunc     = errors.New("function must not be nil")
 	ErrTimerClosed = errors.New("timer closed")
 	ErrInvalidExpr = errors.New("invalid cron desc")
 )

@@ -124,6 +124,9 @@ func (h *heapTimer) deleteTask(taskId int64) {
 }
 
 func (h *heapTimer) After(delay time.Duration, fn func()) (timer.TaskID, error) {
+	if fn == nil {
+		return timer.EmptyTaskID, timer.ErrNilFunc
+	}
 	if h.isClosed() {
 		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}
@@ -136,6 +139,9 @@ func (h *heapTimer) After(delay time.Duration, fn func()) (timer.TaskID, error) 
 }
 
 func (h *heapTimer) Every(delay time.Duration, fn func()) (timer.TaskID, error) {
+	if fn == nil {
+		return timer.EmptyTaskID, timer.ErrNilFunc
+	}
 	if h.isClosed() {
 		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}
@@ -176,6 +182,9 @@ func (h *heapTimer) Stop() {
 }
 
 func (h *heapTimer) Cron(desc string, fn func()) (timer.TaskID, error) {
+	if fn == nil {
+		return timer.EmptyTaskID, timer.ErrNilFunc
+	}
 	if h.isClosed() {
 		return timer.EmptyTaskID, timer.ErrTimerClosed
 	}
